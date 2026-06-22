@@ -14,6 +14,7 @@ Each function returns a complete ``RLTrainer.Config``, discoverable by
 import dataclasses
 
 from torchtitan.components.checkpoint import CheckpointManager
+from torchtitan.components.loss import ChunkedLoss, GRPOLoss
 from torchtitan.components.lr_scheduler import LRSchedulersContainer
 from torchtitan.components.optimizer import default_adamw
 from torchtitan.config import (
@@ -36,7 +37,6 @@ from torchtitan.experiments.rl.generator_router import (
     LeastLoadedRoutingStrategy,
     StickySessionRoutingStrategy,
 )
-from torchtitan.experiments.rl.losses import GRPOLoss
 from torchtitan.experiments.rl.models.cast_linear import LMHeadCastConverter
 from torchtitan.experiments.rl.models.vllm_registry import InferenceParallelismConfig
 from torchtitan.experiments.rl.observability.metrics import MetricsProcessor
@@ -239,7 +239,6 @@ def rl_grpo_gpt_oss_20b_varlen() -> RLTrainer.Config:
             parallelism=ParallelismConfig(
                 data_parallel_shard_degree=1,
                 tensor_parallel_degree=2,
-                disable_loss_parallel=True,
             ),
             checkpoint=CheckpointManager.Config(
                 enable=True,
@@ -295,7 +294,6 @@ def rl_grpo_gpt_oss_debug_varlen() -> RLTrainer.Config:
             parallelism=ParallelismConfig(
                 data_parallel_shard_degree=1,
                 tensor_parallel_degree=2,
-                disable_loss_parallel=True,
             ),
             checkpoint=CheckpointManager.Config(enable=False),
             loss=GRPOLoss.Config(),
@@ -345,7 +343,6 @@ def rl_grpo_gpt_oss_debug_varlen_batch_invariant() -> RLTrainer.Config:
                 data_parallel_shard_degree=1,
                 tensor_parallel_degree=2,
                 enable_sequence_parallel=False,
-                disable_loss_parallel=True,
             ),
             checkpoint=CheckpointManager.Config(enable=False),
             debug=batch_invariant_config,
@@ -733,3 +730,21 @@ def rl_grpo_qwen3_0_6b_varlen_batch_invariant() -> RLTrainer.Config:
             debug=batch_invariant_config,
         ),
     )
+
+
+def rl_grpo_qwen3_0_6b_varlen_batch_invariant_chunked() -> RLTrainer.Config:
+    """On-policy GRPO for Qwen3-0.6B with a ChunkedLoss-wrapped GRPO loss
+    (4 GPUs: 2 gen + 2 train).
+
+    The model forward skips its lm_head; ChunkedLoss applies the lm_head and the
+    inner GRPO loss over the hidden states in ``num_chunks`` sequence chunks to
+    cap the peak logits memory at O(B*L/num_chunks*V). Because chunking is along
+    the sequence dim and GRPO is per-token, this is bitwise-identical to
+    ``rl_grpo_qwen3_0_6b_varlen_batch_invariant`` (the chunked loss is exact).
+    """
+    config = rl_grpo_qwen3_0_6b_varlen_batch_invariant()
+    config.trainer = dataclasses.replace(
+        config.trainer,
+        loss=ChunkedLoss.Config(num_chunks=8, loss_fn=GRPOLoss.Config()),
+    )
+    return config
